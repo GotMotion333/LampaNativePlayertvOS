@@ -15,13 +15,79 @@
         }
     }
 
+    // Вспомогательная функция: эмуляция клика по <a target="_blank"> для WebKit
+    function openViaAnchor(url, target) {
+        var a = document.createElement('a');
+        a.setAttribute('href', url);
+        if (target) a.setAttribute('target', target);
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(function () {
+            if (a.parentNode) a.parentNode.removeChild(a);
+        }, 500);
+    }
+
+    function launchNativePlayer(videoUrl, title) {
+        var cleanUrl = videoUrl.replace('&preload', '&play').replace(/\s/g, '%20');
+        var encodedUrl = encodeURIComponent(cleanUrl);
+        var encodedTitle = title ? '&title=' + encodeURIComponent(title) : '';
+
+        // 4 варианта формирования и вызова Deep Link для проверки WebView на tvOS
+        var linkSimpleEncoded = 'nativeplayer://play?url=' + encodedUrl + encodedTitle;
+        var linkSimpleRaw = 'nativeplayer://play?url=' + cleanUrl;
+        var linkCallbackEncoded = 'nativeplayer://x-callback-url/play?url=' + encodedUrl + encodedTitle;
+
+        Lampa.Select.show({
+            title: 'Способ запуска Native Player',
+            items: [
+                {
+                    title: '1. Клик <a> (_blank) + Simple URL (Рекомендуется)',
+                    subtitle: linkSimpleEncoded.substring(0, 60) + '...',
+                    action: function () {
+                        openViaAnchor(linkSimpleEncoded, '_blank');
+                    }
+                },
+                {
+                    title: '2. window.open + Simple URL',
+                    subtitle: 'Открытие через новое окно WebKit',
+                    action: function () {
+                        window.open(linkSimpleEncoded, '_blank');
+                    }
+                },
+                {
+                    title: '3. Клик <a> + Прямой URL (без encodeURIComponent)',
+                    subtitle: linkSimpleRaw.substring(0, 60) + '...',
+                    action: function () {
+                        openViaAnchor(linkSimpleRaw, '_blank');
+                    }
+                },
+                {
+                    title: '4. Клик <a> + x-callback-url',
+                    subtitle: linkCallbackEncoded.substring(0, 60) + '...',
+                    action: function () {
+                        openViaAnchor(linkCallbackEncoded, '_blank');
+                    }
+                }
+            ],
+            onSelect: function (item) {
+                Lampa.Controller.toggle('content');
+                setTimeout(function () {
+                    item.action();
+                }, 100);
+            },
+            onBack: function () {
+                Lampa.Controller.toggle('content');
+            }
+        });
+    }
+
     function startPlugin() {
         if (window.lampa_native_player_plugin) return;
         window.lampa_native_player_plugin = true;
 
         registerPlayerOption();
 
-        // Гарантируем появление пункта Native Player в выпадающем списке при клике на выбор плеера
         if (Lampa.Select && Lampa.Select.show && !Lampa.Select.__native_patched) {
             Lampa.Select.__native_patched = true;
             var origSelectShow = Lampa.Select.show;
@@ -46,14 +112,11 @@
                             });
                         }
                     }
-                } catch (e) {
-                    console.error('NativePlayer Select patch error:', e);
-                }
+                } catch (e) {}
                 return origSelectShow.apply(this, arguments);
             };
         }
 
-        // Корректно отображаем название выбранного плеера в меню Настройки -> Плеер
         if (Lampa.Settings && Lampa.Settings.listener) {
             Lampa.Settings.listener.follow('open', function (e) {
                 if (e.name === 'player') {
@@ -69,7 +132,6 @@
             });
         }
 
-        // Перехватываем запуск видео и торрентов через Lampa.Player.play
         if (Lampa.Player && Lampa.Player.play && !Lampa.Player.__native_patched) {
             Lampa.Player.__native_patched = true;
             var origPlay = Lampa.Player.play;
@@ -89,7 +151,6 @@
                         }
 
                         if (typeof videoUrl === 'string' && videoUrl.length > 0) {
-                            // Проверяем, запущен ли торрент (TorrServer) или обычный онлайн-поток
                             var isTorrent = Boolean(
                                 object.torrent_hash ||
                                 object.need_check_torrent ||
@@ -103,14 +164,7 @@
                             var activePlayer = isTorrent ? playerTorrent : playerMain;
 
                             if (activePlayer === 'nativeplayer') {
-                                // Готовим прямую ссылку потока TorrServer
-                                var cleanUrl = videoUrl.replace('&preload', '&play').replace(/\s/g, '%20');
-                                var encodedUrl = encodeURIComponent(cleanUrl);
-
-                                // Используем x-callback-url схему со скриншота для возврата в Лампу после просмотра
-                                var deepLink = 'nativeplayer://x-callback-url/play?url=' + encodedUrl;
-
-                                window.location.assign(deepLink);
+                                launchNativePlayer(videoUrl, object.title || '');
                                 return;
                             }
                         }
