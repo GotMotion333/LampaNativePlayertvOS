@@ -1,68 +1,143 @@
 (function () {
     'use strict';
 
-    function initNativePlayer() {
-        if (!window.Lampa || !window.Lampa.Player) return;
-
-        // 1. Безопасно регистрируем плеер в системном реестре Лампы
-        try {
-            if (!window.Lampa.Player.players) {
-                window.Lampa.Player.players = {};
+    function registerPlayerOption() {
+        if (window.Lampa && Lampa.Params && Lampa.Params.values) {
+            if (Lampa.Params.values.player) {
+                Lampa.Params.values.player['nativeplayer'] = 'Native Player';
             }
-            window.Lampa.Player.players.nativeplayer = {
-                name: 'Native Player'
+            if (Lampa.Params.values.player_torrent) {
+                Lampa.Params.values.player_torrent['nativeplayer'] = 'Native Player';
+            }
+            if (Lampa.Params.values.player_iptv) {
+                Lampa.Params.values.player_iptv['nativeplayer'] = 'Native Player';
+            }
+        }
+    }
+
+    function startPlugin() {
+        if (window.lampa_native_player_plugin) return;
+        window.lampa_native_player_plugin = true;
+
+        registerPlayerOption();
+
+        // Гарантируем появление пункта Native Player в выпадающем списке при клике на выбор плеера
+        if (Lampa.Select && Lampa.Select.show && !Lampa.Select.__native_patched) {
+            Lampa.Select.__native_patched = true;
+            var origSelectShow = Lampa.Select.show;
+
+            Lampa.Select.show = function (params) {
+                try {
+                    if (params && Array.isArray(params.items)) {
+                        var isPlayerMenu = params.items.some(function (item) {
+                            return item && (item.value === 'infuse' || item.value === 'inner' || item.value === 'vlc' || item.value === 'ios');
+                        });
+
+                        var hasNative = params.items.some(function (item) {
+                            return item && item.value === 'nativeplayer';
+                        });
+
+                        if (isPlayerMenu && !hasNative) {
+                            registerPlayerOption();
+                            params.items.push({
+                                title: 'Native Player',
+                                value: 'nativeplayer',
+                                selected: false
+                            });
+                        }
+                    }
+                } catch (e) {
+                    console.error('NativePlayer Select patch error:', e);
+                }
+                return origSelectShow.apply(this, arguments);
             };
-        } catch (e) {
-            console.error('NativePlayer registration error:', e);
         }
 
-        // 2. Перехватываем метод запуска воспроизведения с защитой от сбоев
-        const original_run = window.Lampa.Player.run;
-        if (original_run) {
-            window.Lampa.Player.run = function (object) {
+        // Корректно отображаем название выбранного плеера в меню Настройки -> Плеер
+        if (Lampa.Settings && Lampa.Settings.listener) {
+            Lampa.Settings.listener.follow('open', function (e) {
+                if (e.name === 'player') {
+                    registerPlayerOption();
+                    setTimeout(function () {
+                        ['player', 'player_torrent', 'player_iptv'].forEach(function (field) {
+                            if (Lampa.Storage.get(field) === 'nativeplayer' && e.body) {
+                                e.body.find('[data-name="' + field + '"] .settings-param__value').text('Native Player');
+                            }
+                        });
+                    }, 50);
+                }
+            });
+        }
+
+        // Перехватываем запуск видео и торрентов через Lampa.Player.play
+        if (Lampa.Player && Lampa.Player.play && !Lampa.Player.__native_patched) {
+            Lampa.Player.__native_patched = true;
+            var origPlay = Lampa.Player.play;
+
+            Lampa.Player.play = function (object) {
                 try {
-                    const selected_player = window.Lampa.Storage.get('player', 'inner');
+                    if (object) {
+                        var videoUrl = object.url;
 
-                    if (selected_player === 'nativeplayer') {
-                        let video_url = object.url;
-
-                        if (Array.isArray(video_url)) {
-                            video_url = video_url[0];
+                        if (videoUrl && typeof videoUrl === 'object') {
+                            if (Array.isArray(videoUrl)) {
+                                videoUrl = videoUrl[0];
+                            } else {
+                                var keys = Object.keys(videoUrl);
+                                if (keys.length) videoUrl = videoUrl[keys[0]];
+                            }
                         }
 
-                        if (video_url) {
-                            const encoded_url = encodeURIComponent(video_url);
-                            const deep_link = `nativeplayer://play?url=${encoded_url}`;
+                        if (typeof videoUrl === 'string' && videoUrl.length > 0) {
+                            // Проверяем, запущен ли торрент (TorrServer) или обычный онлайн-поток
+                            var isTorrent = Boolean(
+                                object.torrent_hash ||
+                                object.need_check_torrent ||
+                                videoUrl.indexOf('/stream/') !== -1 ||
+                                videoUrl.indexOf('link=') !== -1 ||
+                                videoUrl.indexOf(':8090') !== -1
+                            );
 
-                            console.log('NativePlayer: Opening ->', deep_link);
-                            window.location.href = deep_link;
-                            return; // Предотвращаем стандартный запуск Лампы
+                            var playerMain = Lampa.Storage.get('player', 'inner');
+                            var playerTorrent = Lampa.Storage.get('player_torrent', playerMain);
+                            var activePlayer = isTorrent ? playerTorrent : playerMain;
+
+                            if (activePlayer === 'nativeplayer') {
+                                // Готовим прямую ссылку потока TorrServer
+                                var cleanUrl = videoUrl.replace('&preload', '&play').replace(/\s/g, '%20');
+                                var encodedUrl = encodeURIComponent(cleanUrl);
+
+                                // Используем x-callback-url схему со скриншота для возврата в Лампу после просмотра
+                                var deepLink = 'nativeplayer://x-callback-url/play?url=' + encodedUrl;
+
+                                window.location.assign(deepLink);
+                                return;
+                            }
                         }
                     }
                 } catch (err) {
-                    console.error('NativePlayer execution failed:', err);
+                    console.error('NativePlayer play error:', err);
                 }
 
-                // Если выбран другой плеер или произошла ошибка — передаем управление дальше
-                return original_run.apply(this, arguments);
+                return origPlay.apply(this, arguments);
             };
         }
-
-        console.log('Native Player plugin loaded successfully.');
     }
 
-    // Инициализация при готовности Лампы
-    if (window.Lampa && window.Lampa.Player) {
-        initNativePlayer();
+    if (window.appready) {
+        startPlugin();
+    } else if (window.Lampa && Lampa.Listener) {
+        Lampa.Listener.follow('app', function (e) {
+            if (e.type === 'ready') startPlugin();
+        });
     } else {
-        let attempts = 0;
-        let interval = setInterval(() => {
-            attempts++;
-            if (window.Lampa && window.Lampa.Player) {
-                clearInterval(interval);
-                initNativePlayer();
-            } else if (attempts > 50) {
-                clearInterval(interval);
+        var timer = setInterval(function () {
+            if (window.Lampa && Lampa.Listener) {
+                clearInterval(timer);
+                if (window.appready) startPlugin();
+                else Lampa.Listener.follow('app', function (e) {
+                    if (e.type === 'ready') startPlugin();
+                });
             }
         }, 200);
     }
