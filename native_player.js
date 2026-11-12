@@ -2,70 +2,68 @@
     'use strict';
 
     function initNativePlayer() {
-        if (!window.Lampa) return;
+        if (!window.Lampa || !window.Lampa.Player) return;
 
-        // 1. Регистрируем новый плеер в системе Лампы, чтобы он появился в выборе плееров
-        if (Lampa.Player && Lampa.Player.players) {
-            Lampa.Player.players.nativeplayer = {
-                name: 'Native Player',
-                // Можно указать иконку, если требуется, или оставить дефолтную
+        // 1. Безопасно регистрируем плеер в системном реестре Лампы
+        try {
+            if (!window.Lampa.Player.players) {
+                window.Lampa.Player.players = {};
+            }
+            window.Lampa.Player.players.nativeplayer = {
+                name: 'Native Player'
+            };
+        } catch (e) {
+            console.error('NativePlayer registration error:', e);
+        }
+
+        // 2. Перехватываем метод запуска воспроизведения с защитой от сбоев
+        const original_run = window.Lampa.Player.run;
+        if (original_run) {
+            window.Lampa.Player.run = function (object) {
+                try {
+                    const selected_player = window.Lampa.Storage.get('player', 'inner');
+
+                    if (selected_player === 'nativeplayer') {
+                        let video_url = object.url;
+
+                        if (Array.isArray(video_url)) {
+                            video_url = video_url[0];
+                        }
+
+                        if (video_url) {
+                            const encoded_url = encodeURIComponent(video_url);
+                            const deep_link = `nativeplayer://play?url=${encoded_url}`;
+
+                            console.log('NativePlayer: Opening ->', deep_link);
+                            window.location.href = deep_link;
+                            return; // Предотвращаем стандартный запуск Лампы
+                        }
+                    }
+                } catch (err) {
+                    console.error('NativePlayer execution failed:', err);
+                }
+
+                // Если выбран другой плеер или произошла ошибка — передаем управление дальше
+                return original_run.apply(this, arguments);
             };
         }
 
-        // 2. Перехватываем стандартный метод запуска плеера
-        const original_run = Lampa.Player.run;
-
-        Lampa.Player.run = function (object) {
-            const selected_player = Lampa.Storage.get('player', 'inner');
-
-            // Проверяем, выбран ли в настройках наш Native Player
-            if (selected_player === 'nativeplayer') {
-                let video_url = object.url;
-
-                // Если пришел массив источников, берем первый доступный
-                if (Array.isArray(video_url)) {
-                    video_url = video_url[0];
-                }
-
-                if (video_url) {
-                    // Кодируем URL видео для безопасности передачи в параметры схемы
-                    const encoded_url = encodeURIComponent(video_url);
-                    
-                    // Формируем deep link на основе данных со скриншота
-                    // Можно использовать стандартный или x-callback вариант:
-                    const deep_link = `nativeplayer://play?url=${encoded_url}`;
-                    // Или с x-callback: `nativeplayer://x-callback-url/play?url=${encoded_url}`
-
-                    console.log('NativePlayer: Opening URL ->', deep_link);
-
-                    try {
-                        // Перенаправляем на deep link, открывающий Native Player на Apple TV
-                        window.location.href = deep_link;
-                    } catch (e) {
-                        console.error('NativePlayer execution error:', e);
-                    }
-
-                    // Предотвращаем запуск стандартного плеера Лампы
-                    return;
-                }
-            }
-
-            // Для остальных плееров выполняем стандартную логику
-            return original_run.apply(this, arguments);
-        };
-
-        console.log('Native Player plugin initialized successfully.');
+        console.log('Native Player plugin loaded successfully.');
     }
 
-    // Ожидаем полной инициализации Лампы
-    if (window.Lampa) {
+    // Инициализация при готовности Лампы
+    if (window.Lampa && window.Lampa.Player) {
         initNativePlayer();
     } else {
-        let check_interval = setInterval(() => {
-            if (window.Lampa) {
-                clearInterval(check_interval);
+        let attempts = 0;
+        let interval = setInterval(() => {
+            attempts++;
+            if (window.Lampa && window.Lampa.Player) {
+                clearInterval(interval);
                 initNativePlayer();
+            } else if (attempts > 50) {
+                clearInterval(interval);
             }
-        }, 100);
+        }, 200);
     }
 })();
